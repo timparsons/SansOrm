@@ -326,6 +326,13 @@ public final class OrmElf
       return OrmWriter.executeUpdate(connection, sql, args);
    }
 
+    public static PreparedStatement prepare(PreparedStatement ps,
+            Object... args) throws SQLException {
+        OrmReader.populateStatementParameters(ps, args);
+
+        return ps;
+    }
+
    /**
     * Gets the column name defined for the given property for the given type.
     *

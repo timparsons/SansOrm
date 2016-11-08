@@ -31,542 +31,575 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import javax.persistence.*;
+import javax.persistence.AttributeConverter;
+import javax.persistence.Column;
+import javax.persistence.Convert;
+import javax.persistence.EnumType;
+import javax.persistence.Enumerated;
+import javax.persistence.GeneratedValue;
+import javax.persistence.Id;
+import javax.persistence.JoinColumn;
+import javax.persistence.Table;
+import javax.persistence.Transient;
 
 import org.postgresql.util.PGobject;
+
+import com.zaxxer.sansorm.annotation.References;
 
 /**
  * An introspected class.
  */
-public class Introspected
-{
-   private Class<?> clazz;
-   private String tableName;
+public class Introspected {
+	private Class<?> clazz;
+	private String tableName;
 
-   private Map<String, FieldColumnInfo> columnToField;
+	private Map<String, FieldColumnInfo> columnToField;
 
-   private FieldColumnInfo selfJoinFCInfo;
+	private FieldColumnInfo selfJoinFCInfo;
 
-   private boolean isGeneratedId;
+	private List<FieldColumnInfo> referenceFields;
 
-   // We use arrays because iteration is much faster
-   private FieldColumnInfo[] idFieldColumnInfos;
-   private String[] idColumnNames;
-   private String[] columnNames;
-   private String[] columnTableNames;
-   private String[] columnsSansIds;
+	private boolean isGeneratedId;
 
-   private String[] insertableColumns;
-   private String[] updatableColumns;
+	// We use arrays because iteration is much faster
+	private FieldColumnInfo[] idFieldColumnInfos;
+	private String[] idColumnNames;
+	private String[] columnNames;
+	private String[] columnTableNames;
+	private String[] columnsSansIds;
 
-   // Instance initializer
-   {
-      columnToField = new LinkedHashMap<String, FieldColumnInfo>();
-   }
+	private String[] insertableColumns;
+	private String[] updatableColumns;
 
-   /**
-    * Constructor.  Introspect the specified class and cache various annotation
-    * data about it.
-    *
-    * @param clazz the class to introspect
-    */
-   Introspected(Class<?> clazz) {
-      this.clazz = clazz;
+	// Instance initializer
+	{
+		columnToField = new LinkedHashMap<String, FieldColumnInfo>();
+		referenceFields = new ArrayList<>();
+	}
 
-      Table tableAnnotation = clazz.getAnnotation(Table.class);
-      if (tableAnnotation != null) {
-         tableName = tableAnnotation.name();
-      }
+	/**
+	 * Constructor. Introspect the specified class and cache various annotation
+	 * data about it.
+	 *
+	 * @param clazz
+	 *            the class to introspect
+	 */
+	Introspected(Class<?> clazz) {
+		this.clazz = clazz;
 
-      try {
-         ArrayList<FieldColumnInfo> idFcInfos = new ArrayList<Introspected.FieldColumnInfo>();
+		Table tableAnnotation = clazz.getAnnotation(Table.class);
+		if (tableAnnotation != null) {
+			if (tableAnnotation.name().equals("")) {
+				tableName = clazz.getSimpleName();
+			} else {
+				tableName = tableAnnotation.name();
+			}
+		}
 
-         for (Field field : clazz.getDeclaredFields()) {
-            int modifiers = field.getModifiers();
-            if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers) || Modifier.isTransient(modifiers)) {
-               continue;
-            }
+		try {
+			ArrayList<FieldColumnInfo> idFcInfos = new ArrayList<Introspected.FieldColumnInfo>();
 
-            field.setAccessible(true);
+			for (Field field : clazz.getDeclaredFields()) {
+				int modifiers = field.getModifiers();
+				if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers) || Modifier.isTransient(modifiers)) {
+					continue;
+				}
 
-            FieldColumnInfo fcInfo = new FieldColumnInfo(field);
+				field.setAccessible(true);
 
-            processColumnAnnotation(fcInfo);
+				FieldColumnInfo fcInfo = new FieldColumnInfo(field);
 
-            Id idAnnotation = field.getAnnotation(Id.class);
-            if (idAnnotation != null) {
-               // Is it a problem that Class.getDeclaredFields() claims the fields are returned unordered?  We count on order.
-               idFcInfos.add(fcInfo);
-               GeneratedValue generatedAnnotation = field.getAnnotation(GeneratedValue.class);
-               isGeneratedId = (generatedAnnotation != null);
-               if (isGeneratedId && idFcInfos.size() > 1) {
-                  throw new IllegalStateException("Cannot have multiple @Id annotations and @GeneratedValue at the same time.");
-               }
-            }
+				processColumnAnnotation(fcInfo);
 
-            Enumerated enumAnnotation = field.getAnnotation(Enumerated.class);
-            if (enumAnnotation != null) {
-               fcInfo.setEnumConstants(enumAnnotation.value());
-            }
+				Id idAnnotation = field.getAnnotation(Id.class);
+				if (idAnnotation != null) {
+					// Is it a problem that Class.getDeclaredFields() claims the
+					// fields are returned unordered? We count on order.
+					idFcInfos.add(fcInfo);
+					GeneratedValue generatedAnnotation = field.getAnnotation(GeneratedValue.class);
+					isGeneratedId = (generatedAnnotation != null);
+					if (isGeneratedId && idFcInfos.size() > 1) {
+						throw new IllegalStateException(
+								"Cannot have multiple @Id annotations and @GeneratedValue at the same time.");
+					}
+				}
 
-            Convert convertAnnotation = field.getAnnotation(Convert.class);
-            if (convertAnnotation != null) {
-               Class converterClass = convertAnnotation.converter();
-               if (!AttributeConverter.class.isAssignableFrom(converterClass)) {
-                  throw new RuntimeException(
-                          "Convert annotation only supports converters implementing AttributeConverter");
-               }
-               fcInfo.setConverter((AttributeConverter)converterClass.newInstance());
-            }
-         }
+				Enumerated enumAnnotation = field.getAnnotation(Enumerated.class);
+				if (enumAnnotation != null) {
+					fcInfo.setEnumConstants(enumAnnotation.value());
+				}
 
-         readColumnInfo(idFcInfos);
+				Convert convertAnnotation = field.getAnnotation(Convert.class);
+				if (convertAnnotation != null) {
+					Class converterClass = convertAnnotation.converter();
+					if (!AttributeConverter.class.isAssignableFrom(converterClass)) {
+						throw new RuntimeException(
+								"Convert annotation only supports converters implementing AttributeConverter");
+					}
+					fcInfo.setConverter((AttributeConverter) converterClass.newInstance());
+				}
+			}
 
-         getInsertableColumns();
-         getUpdatableColumns();
-      } catch (Exception e) {
-         throw new RuntimeException(e);
-      }
-   }
+			readColumnInfo(idFcInfos);
 
-   /**
-    * @param target
-    * @param columnName
-    * @return
-    */
-   public Object get(Object target, String columnName)
-   {
-      FieldColumnInfo fcInfo = columnToField.get(columnName);
-      if (fcInfo == null) {
-         throw new RuntimeException("Cannot find field mapped to column " + columnName + " on type " + target.getClass().getCanonicalName());
-      }
+			getInsertableColumns();
+			getUpdatableColumns();
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
+	}
 
-      try {
-         Object value = fcInfo.field.get(target);
-         // Fix-up column value for enums, integer as boolean, etc.
-         if (fcInfo.getConverter() != null) {
-            value = fcInfo.getConverter().convertToDatabaseColumn(value);
-         } else if (fcInfo.enumConstants != null) {
-            value = (fcInfo.enumType == EnumType.ORDINAL ? ((Enum<?>) value).ordinal() : ((Enum<?>) value).name());
-         }
+	/**
+	 * @param target
+	 * @param columnName
+	 * @return
+	 */
+	public Object get(Object target, String columnName) {
+		FieldColumnInfo fcInfo = columnToField.get(columnName);
+		if (fcInfo == null) {
+			throw new RuntimeException("Cannot find field mapped to column " + columnName + " on type "
+					+ target.getClass().getCanonicalName());
+		}
 
-         return value;
-      }
-      catch (Exception e) {
-         throw new RuntimeException(e);
-      }
-   }
+		try {
+			Object value = fcInfo.field.get(target);
+			// Fix-up column value for enums, integer as boolean, etc.
+			if (fcInfo.getConverter() != null) {
+				value = fcInfo.getConverter().convertToDatabaseColumn(value);
+			} else if (fcInfo.enumConstants != null) {
+				value = (fcInfo.enumType == EnumType.ORDINAL ? ((Enum<?>) value).ordinal() : ((Enum<?>) value).name());
+			}
 
-   /**
-    * @param target The target object.
-    * @param columnName The column name.
-    * @param value The column value.
-    */
-   public void set(Object target, String columnName, Object value)
-   {
-      FieldColumnInfo fcInfo = columnToField.get(columnName);
-      if (fcInfo == null) {
-         throw new RuntimeException("Cannot find field mapped to column " + columnName + " on type " + target.getClass().getCanonicalName());
-      }
+			return value;
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
+	}
 
-      try {
-         final Class<?> fieldType = fcInfo.fieldType;
-         Class<?> columnType = value.getClass();
-         Object columnValue = value;
+	/**
+	 * @param target
+	 *            The target object.
+	 * @param columnName
+	 *            The column name.
+	 * @param value
+	 *            The column value.
+	 */
+	public void set(Object target, String columnName, Object value) {
+		FieldColumnInfo fcInfo = columnToField.get(columnName);
+		if (fcInfo == null) {
+			throw new RuntimeException("Cannot find field mapped to column " + columnName + " on type "
+					+ target.getClass().getCanonicalName());
+		}
 
-         if (fcInfo.getConverter() != null) {
-            columnValue = fcInfo.getConverter().convertToEntityAttribute(columnValue);
-         } else if (fieldType != columnType) {
-            // Fix-up column value for enums, integer as boolean, etc.
-            if (fieldType == boolean.class && columnType == Integer.class) {
-               columnValue = (((Integer) columnValue) != 0);
-            }
-            else if (columnType == BigDecimal.class) {
-               if (fieldType == BigInteger.class) {
-                  columnValue = ((BigDecimal) columnValue).toBigInteger();
-               }
-               else if (fieldType == Integer.class) {
-                  columnValue = (int) ((BigDecimal) columnValue).longValue();
-               }
-               else if (fieldType == Long.class) {
-                  columnValue = ((BigDecimal) columnValue).longValue();
-               }
-            }
-            else if (fcInfo.enumConstants != null) {
-               columnValue = fcInfo.enumConstants.get(columnValue);
-            }
-            else if (columnValue instanceof Clob) {
-               columnValue = readClob((Clob) columnValue);
-            }
-            else if ("PGobject".equals(columnType.getSimpleName()) && "citext".equalsIgnoreCase(((PGobject) columnValue).getType())) {
-               columnValue = ((PGobject) columnValue).getValue();
-            }
-         }
+		try {
+			final Class<?> fieldType = fcInfo.fieldType;
+			Class<?> columnType = value.getClass();
+			Object columnValue = value;
 
-         fcInfo.field.set(target, columnValue);
-      }
-      catch (Exception e) {
-         throw new RuntimeException(e);
-      }
-   }
+			if (fcInfo.getConverter() != null) {
+				columnValue = fcInfo.getConverter().convertToEntityAttribute(columnValue);
+			} else if (fieldType != columnType) {
+				// Fix-up column value for enums, integer as boolean, etc.
+				if (fieldType == boolean.class && columnType == Integer.class) {
+					columnValue = (((Integer) columnValue) != 0);
+				} else if (columnType == BigDecimal.class) {
+					if (fieldType == BigInteger.class) {
+						columnValue = ((BigDecimal) columnValue).toBigInteger();
+					} else if (fieldType == Integer.class) {
+						columnValue = (int) ((BigDecimal) columnValue).longValue();
+					} else if (fieldType == Long.class) {
+						columnValue = ((BigDecimal) columnValue).longValue();
+					}
+				} else if (fcInfo.enumConstants != null) {
+					columnValue = fcInfo.enumConstants.get(columnValue);
+				} else if (columnValue instanceof Clob) {
+					columnValue = readClob((Clob) columnValue);
+				} else if ("PGobject".equals(columnType.getSimpleName())
+						&& "citext".equalsIgnoreCase(((PGobject) columnValue).getType())) {
+					columnValue = ((PGobject) columnValue).getValue();
+				}
+			}
 
-   /**
-    * Determines whether this class has join columns.
-    *
-    * @return true if this class has @JoinColumn annotations
-    */
-   public boolean hasSelfJoinColumn()
-   {
-      return selfJoinFCInfo != null;
-   }
+			fcInfo.field.set(target, columnValue);
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
+	}
 
-   /**
-    * Check if the introspected class has a self-join column defined.
-    *
-    * @param columnName the column name to check
-    * @return true if the specified column is a self-join column
-    */
-   public boolean isSelfJoinColumn(String columnName)
-   {
-      return selfJoinFCInfo.columnName.equals(columnName);
-   }
+	public void setReference(Object target, Object referenceValue, FieldColumnInfo reference) {
+		try {
+			reference.field.set(target, referenceValue);
+		} catch (IllegalArgumentException | IllegalAccessException e) {
+			throw new RuntimeException(e);
+		}
+	}
 
-   /**
-    * Get the self-join column, if one is defined for this class.
-    *
-    * @return the self-join column, or null
-    */
-   public String getSelfJoinColumn()
-   {
-      return (selfJoinFCInfo != null ? selfJoinFCInfo.columnName : null);
-   }
+	/**
+	 * Determines whether this class has join columns.
+	 *
+	 * @return true if this class has @JoinColumn annotations
+	 */
+	public boolean hasSelfJoinColumn() {
+		return selfJoinFCInfo != null;
+	}
 
-   /**
-    * Get all of the columns defined for this introspected class.
-    *
-    * @return and array of column names
-    */
-   public String[] getColumnNames()
-   {
-      return columnNames;
-   }
+	/**
+	 * Check if the introspected class has a self-join column defined.
+	 *
+	 * @param columnName
+	 *            the column name to check
+	 * @return true if the specified column is a self-join column
+	 */
+	public boolean isSelfJoinColumn(String columnName) {
+		return selfJoinFCInfo.columnName.equals(columnName);
+	}
 
-   /**
-    * Get all of the table names associated with the columns for this introspected class.
-    *
-    * @return an array of column table names
-    */
-   public String[] getColumnTableNames()
-   {
-      return columnTableNames;
-   }
+	/**
+	 * Get the self-join column, if one is defined for this class.
+	 *
+	 * @return the self-join column, or null
+	 */
+	public String getSelfJoinColumn() {
+		return (selfJoinFCInfo != null ? selfJoinFCInfo.columnName : null);
+	}
 
-   /**
-    * Get all of the ID columns defined for this introspected class.
-    *
-    * @return and array of column names
-    */
-   public String[] getIdColumnNames()
-   {
-      return idColumnNames;
-   }
+	/**
+	 * Get all of the columns defined for this introspected class.
+	 *
+	 * @return and array of column names
+	 */
+	public String[] getColumnNames() {
+		return columnNames;
+	}
 
-   /**
-    * Get all of the columns defined for this introspected class, minus the ID columns.
-    *
-    * @return and array of column names
-    */
-   public String[] getColumnsSansIds()
-   {
-      return columnsSansIds;
-   }
+	/**
+	 * Get all of the table names associated with the columns for this
+	 * introspected class.
+	 *
+	 * @return an array of column table names
+	 */
+	public String[] getColumnTableNames() {
+		return columnTableNames;
+	}
 
-   /**
-    * @return
-    */
-   public boolean hasGeneratedId()
-   {
-      return isGeneratedId;
-   }
+	/**
+	 * Get all of the ID columns defined for this introspected class.
+	 *
+	 * @return and array of column names
+	 */
+	public String[] getIdColumnNames() {
+		return idColumnNames;
+	}
 
-   /**
-    * Get the insertable columns for this object.
-    *
-    * @return the insertable columns
-    */
-   public String[] getInsertableColumns()
-   {
-      if (insertableColumns != null) {
-         return insertableColumns;
-      }
+	/**
+	 * Get all of the columns defined for this introspected class, minus the ID
+	 * columns.
+	 *
+	 * @return and array of column names
+	 */
+	public String[] getColumnsSansIds() {
+		return columnsSansIds;
+	}
 
-      LinkedList<String> columns = new LinkedList<String>();
-      if (hasGeneratedId()) {
-         columns.addAll(Arrays.asList(columnsSansIds));
-      }
-      else {
-         columns.addAll(Arrays.asList(columnNames));
-      }
+	/**
+	 * @return
+	 */
+	public boolean hasGeneratedId() {
+		return isGeneratedId;
+	}
 
-      Iterator<String> iterator = columns.iterator();
-      while (iterator.hasNext()) {
-         if (!isInsertableColumn(iterator.next())) {
-            iterator.remove();
-         }
-      }
+	/**
+	 * Get the insertable columns for this object.
+	 *
+	 * @return the insertable columns
+	 */
+	public String[] getInsertableColumns() {
+		if (insertableColumns != null) {
+			return insertableColumns;
+		}
 
-      insertableColumns = columns.toArray(new String[0]);
-      return insertableColumns;
-   }
+		LinkedList<String> columns = new LinkedList<String>();
+		if (hasGeneratedId()) {
+			columns.addAll(Arrays.asList(columnsSansIds));
+		} else {
+			columns.addAll(Arrays.asList(columnNames));
+		}
 
-   /**
-    * Get the updatable columns for this object.
-    *
-    * @return the updatable columns
-    */
-   public String[] getUpdatableColumns()
-   {
-      if (updatableColumns != null) {
-         return updatableColumns;
-      }
+		Iterator<String> iterator = columns.iterator();
+		while (iterator.hasNext()) {
+			if (!isInsertableColumn(iterator.next())) {
+				iterator.remove();
+			}
+		}
 
-      LinkedList<String> columns = new LinkedList<String>();
-      if (hasGeneratedId()) {
-         columns.addAll(Arrays.asList(columnsSansIds));
-      }
-      else {
-         columns.addAll(Arrays.asList(columnNames));
-      }
+		insertableColumns = columns.toArray(new String[0]);
+		return insertableColumns;
+	}
 
-      Iterator<String> iterator = columns.iterator();
-      while (iterator.hasNext()) {
-         if (!isUpdatableColumn(iterator.next())) {
-            iterator.remove();
-         }
-      }
+	/**
+	 * Get the updatable columns for this object.
+	 *
+	 * @return the updatable columns
+	 */
+	public String[] getUpdatableColumns() {
+		if (updatableColumns != null) {
+			return updatableColumns;
+		}
 
-      updatableColumns = columns.toArray(new String[0]);
-      return updatableColumns;
-   }
+		LinkedList<String> columns = new LinkedList<String>();
+		if (hasGeneratedId()) {
+			columns.addAll(Arrays.asList(columnsSansIds));
+		} else {
+			columns.addAll(Arrays.asList(columnNames));
+		}
 
-   /**
-    * Is this specified column insertable?
-    *
-    * @param columnName the column name
-    * @return true if insertable, false otherwise
-    */
-   public boolean isInsertableColumn(String columnName)
-   {
-      FieldColumnInfo fcInfo = columnToField.get(columnName);
-      return (fcInfo != null && fcInfo.insertable);
-   }
+		Iterator<String> iterator = columns.iterator();
+		while (iterator.hasNext()) {
+			if (!isUpdatableColumn(iterator.next())) {
+				iterator.remove();
+			}
+		}
 
-   /**
-    * Is this specified column updatable?
-    *
-    * @param columnName the column name
-    * @return true if updatable, false otherwise
-    */
-   public boolean isUpdatableColumn(String columnName)
-   {
-      FieldColumnInfo fcInfo = columnToField.get(columnName);
-      return (fcInfo != null && fcInfo.updatable);
-   }
+		updatableColumns = columns.toArray(new String[0]);
+		return updatableColumns;
+	}
 
-   /**
-    * @param target
-    * @return
-    */
-   public Object[] getActualIds(Object target)
-   {
-      if (idColumnNames.length == 0) {
-         return null;
-      }
+	/**
+	 * Is this specified column insertable?
+	 *
+	 * @param columnName
+	 *            the column name
+	 * @return true if insertable, false otherwise
+	 */
+	public boolean isInsertableColumn(String columnName) {
+		FieldColumnInfo fcInfo = columnToField.get(columnName);
+		return (fcInfo != null && fcInfo.insertable);
+	}
 
-      try {
-         Object[] ids = new Object[idColumnNames.length];
-         int i = 0;
-         for (FieldColumnInfo fcInfo : idFieldColumnInfos) {
-            ids[i++] = fcInfo.field.get(target);
-         }
-         return ids;
-      }
-      catch (IllegalAccessException e) {
-         throw new RuntimeException(e);
-      }
-   }
+	/**
+	 * Is this specified column updatable?
+	 *
+	 * @param columnName
+	 *            the column name
+	 * @return true if updatable, false otherwise
+	 */
+	public boolean isUpdatableColumn(String columnName) {
+		FieldColumnInfo fcInfo = columnToField.get(columnName);
+		return (fcInfo != null && fcInfo.updatable);
+	}
 
-   /**
-    * Get the table name defined for the introspected class.
-    *
-    * @return a table name
-    */
-   public String getTableName()
-   {
-      return tableName;
-   }
+	/**
+	 * @param target
+	 * @return
+	 */
+	public Object[] getActualIds(Object target) {
+		if (idColumnNames.length == 0) {
+			return null;
+		}
 
-   public String getColumnNameForProperty(String propertyName)
-   {
-      for (FieldColumnInfo fcInfo : columnToField.values()) {
-         if (fcInfo.field.getName().equalsIgnoreCase(propertyName)) {
-            return fcInfo.columnName;
-         }
-      }
+		try {
+			Object[] ids = new Object[idColumnNames.length];
+			int i = 0;
+			for (FieldColumnInfo fcInfo : idFieldColumnInfos) {
+				ids[i++] = fcInfo.field.get(target);
+			}
+			return ids;
+		} catch (IllegalAccessException e) {
+			throw new RuntimeException(e);
+		}
+	}
 
-      return null;
-   }
+	/**
+	 * Get the table name defined for the introspected class.
+	 *
+	 * @return a table name
+	 */
+	public String getTableName() {
+		return tableName;
+	}
 
-   // *****************************************************************************
-   //                              Private Methods
-   // *****************************************************************************
+	public String getColumnNameForProperty(String propertyName) {
+		for (FieldColumnInfo fcInfo : columnToField.values()) {
+			if (fcInfo.field.getName().equalsIgnoreCase(propertyName)) {
+				return fcInfo.columnName;
+			}
+		}
 
-   private void readColumnInfo(ArrayList<FieldColumnInfo> idFcInfos)
-   {
-      idFieldColumnInfos = new FieldColumnInfo[idFcInfos.size()];
-      idColumnNames = new String[idFcInfos.size()];
-      int i = 0;
-      int j = 0;
-      for (FieldColumnInfo fcInfo : idFcInfos) {
-         idColumnNames[i] = fcInfo.columnName;
-         idFieldColumnInfos[i] = fcInfo;
-         ++i;
-      }
+		return null;
+	}
 
-      columnNames = new String[columnToField.size()];
-      columnTableNames = new String[columnNames.length];
-      columnsSansIds = new String[columnNames.length - idColumnNames.length];
-      i = 0;
-      j = 0;
-      for (Entry<String, FieldColumnInfo> entry : columnToField.entrySet()) {
-         columnNames[i] = entry.getKey();
-         columnTableNames[i] = entry.getValue().columnTableName;
-         if (!idFcInfos.contains(entry.getValue())) {
-            columnsSansIds[j] = entry.getKey();
-            ++j;
-         }
-         ++i;
-      }
-   }
+	public boolean containsColumn(String columnName) {
+		return columnToField.containsKey(columnName);
+	}
 
-   private String readClob(Clob clob) throws IOException, SQLException
-   {
-      Reader reader = clob.getCharacterStream();
-      try {
-         StringBuilder sb = new StringBuilder();
-         char[] cbuf = new char[1024];
-         while (true) {
-            int rc = reader.read(cbuf);
-            if (rc == -1) {
-               break;
-            }
-            sb.append(cbuf, 0, rc);
-         }
-         return sb.toString();
-      }
-      finally {
-         reader.close();
-      }
-   }
+	public boolean hasReferenceFields() {
+		return !referenceFields.isEmpty();
+	}
 
-   private void processColumnAnnotation(FieldColumnInfo fcInfo)
-   {
-      Field field = fcInfo.field;
+	public List<FieldColumnInfo> getReferenceFields() {
+		return referenceFields;
+	}
 
-      Column columnAnnotation = field.getAnnotation(Column.class);
-      if (columnAnnotation != null) {
-         fcInfo.columnName = columnAnnotation.name().toLowerCase();
-         String columnTableName = columnAnnotation.table();
-         if (columnTableName != null && columnTableName.length() > 0) {
-            fcInfo.columnTableName = columnTableName.toLowerCase();
-         }
+	// *****************************************************************************
+	// Private Methods
+	// *****************************************************************************
 
-         fcInfo.insertable = columnAnnotation.insertable();
-         fcInfo.updatable = columnAnnotation.updatable();
-      }
-      else {
-         // If there is no Column annotation, is there a JoinColumn annotation?
-         JoinColumn joinColumnAnnotation = field.getAnnotation(JoinColumn.class);
-         if (joinColumnAnnotation != null) {
-            // Is the JoinColumn a self-join?
-            if (field.getType() == clazz) {
-               fcInfo.columnName = joinColumnAnnotation.name().toLowerCase();
-               selfJoinFCInfo = fcInfo;
-            }
-            else {
-               throw new RuntimeException("JoinColumn annotations can only be self-referencing: " + field.getType().getCanonicalName() + " != "
-                     + clazz.getCanonicalName());
-            }
-         }
-         else {
-            fcInfo.columnName = field.getName().toLowerCase();
-         }
-      }
+	private void readColumnInfo(ArrayList<FieldColumnInfo> idFcInfos) {
+		idFieldColumnInfos = new FieldColumnInfo[idFcInfos.size()];
+		idColumnNames = new String[idFcInfos.size()];
+		int i = 0;
+		int j = 0;
+		for (FieldColumnInfo fcInfo : idFcInfos) {
+			idColumnNames[i] = fcInfo.columnName;
+			idFieldColumnInfos[i] = fcInfo;
+			++i;
+		}
 
-      Transient transientAnnotation = field.getAnnotation(Transient.class);
-      if (transientAnnotation == null) {
-         columnToField.put(fcInfo.columnName, fcInfo);
-      }
-   }
+		columnNames = new String[columnToField.size()];
+		columnTableNames = new String[columnNames.length];
+		columnsSansIds = new String[columnNames.length - idColumnNames.length];
+		i = 0;
+		j = 0;
+		for (Entry<String, FieldColumnInfo> entry : columnToField.entrySet()) {
+			columnNames[i] = entry.getKey();
+			columnTableNames[i] = entry.getValue().columnTableName;
+			if (!idFcInfos.contains(entry.getValue())) {
+				columnsSansIds[j] = entry.getKey();
+				++j;
+			}
+			++i;
+		}
+	}
 
-   /**
-    * Column information about a field
-    */
-   private static class FieldColumnInfo
-   {
-      private boolean updatable;
-      private boolean insertable;
-      private String columnName;
-      private String columnTableName;
-      private Field field;
-      private Class<?> fieldType;
-      private EnumType enumType;
-      private Map<Object, Object> enumConstants;
-      private AttributeConverter converter;
+	private String readClob(Clob clob) throws IOException, SQLException {
+		Reader reader = clob.getCharacterStream();
+		try {
+			StringBuilder sb = new StringBuilder();
+			char[] cbuf = new char[1024];
+			while (true) {
+				int rc = reader.read(cbuf);
+				if (rc == -1) {
+					break;
+				}
+				sb.append(cbuf, 0, rc);
+			}
+			return sb.toString();
+		} finally {
+			reader.close();
+		}
+	}
 
-      public FieldColumnInfo(Field field) {
-         this.field = field;
-         this.fieldType = field.getType();
+	private void processColumnAnnotation(FieldColumnInfo fcInfo) {
+		Field field = fcInfo.field;
 
-         // remap safe conversions
-         if (fieldType == java.util.Date.class) {
-            fieldType = Timestamp.class;
-         }
-         else if (fieldType == int.class) {
-            fieldType = Integer.class;
-         }
-         else if (fieldType == long.class) {
-            fieldType = Long.class;
-         }
-      }
+		Column columnAnnotation = field.getAnnotation(Column.class);
+		if (columnAnnotation != null) {
+			fcInfo.columnName = columnAnnotation.name().toLowerCase();
+			if (fcInfo.columnName.equals("")) {
+				fcInfo.columnName = field.getName();
+			}
+			String columnTableName = columnAnnotation.table();
+			if (columnTableName != null && columnTableName.length() > 0) {
+				fcInfo.columnTableName = columnTableName.toLowerCase();
+			}
 
-      <T extends Enum<?>> void setEnumConstants(EnumType type)
-      {
-         this.enumType = type;
-         enumConstants = new HashMap<Object, Object>();
-         @SuppressWarnings("unchecked")
-         T[] enums = (T[]) field.getType().getEnumConstants();
-         for (T enumConst : enums) {
-            Object key = (type == EnumType.ORDINAL ? enumConst.ordinal() : enumConst.name());
-            enumConstants.put(key, enumConst);
-         }
-      }
+			fcInfo.insertable = columnAnnotation.insertable();
+			fcInfo.updatable = columnAnnotation.updatable();
+		} else {
+			// If there is no Column annotation, is there a JoinColumn
+			// annotation?
+			JoinColumn joinColumnAnnotation = field.getAnnotation(JoinColumn.class);
+			References referencesAnnotation = field.getAnnotation(References.class);
+			if (joinColumnAnnotation != null) {
+				// Is the JoinColumn a self-join?
+				if (field.getType() == clazz) {
+					fcInfo.columnName = joinColumnAnnotation.name().toLowerCase();
+					selfJoinFCInfo = fcInfo;
+				} else {
+					throw new RuntimeException("JoinColumn annotations can only be self-referencing: "
+							+ field.getType().getCanonicalName() + " != " + clazz.getCanonicalName());
+				}
+			} else if (referencesAnnotation != null) {
+				fcInfo.referencesType = referencesAnnotation.type();
+				fcInfo.referencesPrefix = referencesAnnotation.prefix();
+				// just to make sure we have all the introspection done
+				Introspector.getIntrospected(fcInfo.referencesType);
+				referenceFields.add(fcInfo);
+			} else {
+				fcInfo.columnName = field.getName().toLowerCase();
+			}
+		}
 
-      @Override
-      public String toString()
-      {
-         return field.getName() + "->" + columnName;
-      }
+		Transient transientAnnotation = field.getAnnotation(Transient.class);
+		if (transientAnnotation == null) {
+			columnToField.put(fcInfo.columnName, fcInfo);
+		}
+	}
 
-      public void setConverter(AttributeConverter converter) {
-         this.converter = converter;
-      }
+	/**
+	 * Column information about a field
+	 */
+	static class FieldColumnInfo {
+		private boolean updatable;
+		private boolean insertable;
+		private String columnName;
+		private String columnTableName;
+		private Field field;
+		private Class<?> fieldType;
+		private EnumType enumType;
+		private Map<Object, Object> enumConstants;
+		private AttributeConverter converter;
+		private Class<?> referencesType;
+		private String referencesPrefix;
 
-      public AttributeConverter getConverter() {
-         return converter;
-      }
-   }
+		public FieldColumnInfo(Field field) {
+			this.field = field;
+			this.fieldType = field.getType();
+
+			// remap safe conversions
+			if (fieldType == java.util.Date.class) {
+				fieldType = Timestamp.class;
+			} else if (fieldType == int.class) {
+				fieldType = Integer.class;
+			} else if (fieldType == long.class) {
+				fieldType = Long.class;
+			}
+		}
+
+		<T extends Enum<?>> void setEnumConstants(EnumType type) {
+			this.enumType = type;
+			enumConstants = new HashMap<Object, Object>();
+			@SuppressWarnings("unchecked")
+			T[] enums = (T[]) field.getType().getEnumConstants();
+			for (T enumConst : enums) {
+				Object key = (type == EnumType.ORDINAL ? enumConst.ordinal() : enumConst.name());
+				enumConstants.put(key, enumConst);
+			}
+		}
+
+		@Override
+		public String toString() {
+			return field.getName() + "->" + columnName;
+		}
+
+		public void setConverter(AttributeConverter converter) {
+			this.converter = converter;
+		}
+
+		public AttributeConverter getConverter() {
+			return converter;
+		}
+
+		Class<?> getReferencesType() {
+			return referencesType;
+		}
+
+		public String getReferencesPrefix() {
+			return referencesPrefix;
+		}
+	}
 }

@@ -44,7 +44,8 @@ class OrmBase
       // protected constructor
    }
 
-   protected static final void populateStatementParameters(PreparedStatement stmt, Object... args) throws SQLException
+    public static final void populateStatementParameters(PreparedStatement stmt,
+            Object... args) throws SQLException
    {
       ParameterMetaData parameterMetaData = stmt.getParameterMetaData();
       final int paramCount = parameterMetaData.getParameterCount();
